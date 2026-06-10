@@ -1,189 +1,340 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 
-const steps = [
-  {
-    id: "category",
-    question: "What's your biggest challenge right now?",
-    subtitle: "We'll start your daily coaching here. You can add more later.",
-    type: "cards",
-    options: [
-      { value: "post-work", emoji: "🌇", label: "Coming home exhausted", desc: "I don't know how to reset after work" },
-      { value: "new-parent", emoji: "👶", label: "New parent survival", desc: "I need daily guidance with my baby" },
-      { value: "sleep", emoji: "😴", label: "I can't sleep well", desc: "I need someone to coach me to rest" },
-      { value: "cooking", emoji: "🍳", label: "Learning to cook", desc: "Nobody ever taught me the basics" },
-      { value: "memory", emoji: "🧠", label: "I forget everything", desc: "Things pass by and I can't retain them" },
-      { value: "marriage", emoji: "💑", label: "Family & relationship", desc: "Work is affecting my family life" },
-    ],
-  },
-  {
-    id: "level",
-    question: "How would you describe yourself right now?",
-    subtitle: "Be honest. Atlas adjusts to where you are, not where you think you should be.",
-    type: "cards",
-    options: [
-      { value: "overwhelmed", emoji: "😮‍💨", label: "Overwhelmed", desc: "I have too much going on and feel lost" },
-      { value: "stuck", emoji: "🧱", label: "Stuck", desc: "I know what to do but can't start" },
-      { value: "building", emoji: "🏗️", label: "Building momentum", desc: "I'm making progress but need structure" },
-      { value: "optimizing", emoji: "🎯", label: "Ready to optimize", desc: "Things are good, I want to level up" },
-    ],
-  },
-  {
-    id: "time",
-    question: "When do you want Atlas to check in with you?",
-    subtitle: "Atlas will reach out at these times. You can change this anytime.",
-    type: "cards",
-    options: [
-      { value: "morning", emoji: "☀️", label: "Morning only", desc: "Start my day with clear instruction" },
-      { value: "evening", emoji: "🌙", label: "Evening only", desc: "Reflect and plan for tomorrow" },
-      { value: "both", emoji: "🔄", label: "Morning + Evening", desc: "Full coaching cycle — recommended" },
-    ],
-  },
-  {
-    id: "name",
-    question: "What should Atlas call you?",
-    subtitle: "This makes your coaching feel like it's actually for you.",
-    type: "text",
-    placeholder: "Your first name",
-  },
-];
+type Msg = { role: "atlas" | "user"; content: string };
 
 export default function Onboarding() {
   const router = useRouter();
-  const [step, setStep] = useState(0);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [textValue, setTextValue] = useState("");
+  const [mode, setMode] = useState<"choose" | "voice" | "text">("choose");
+  const [msgs, setMsgs] = useState<Msg[]>([]);
+  const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [atlasSpeaking, setAtlasSpeaking] = useState(false);
+  const [transcript, setTranscript] = useState("");
+  const [status, setStatus] = useState("Tap the mic and speak freely");
+  const [phase, setPhase] = useState<"interview" | "generating" | "done">("interview");
+  const [exchangeCount, setExchangeCount] = useState(0);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const synthRef = useRef<any>(null);
+  const msgsEndRef = useRef<HTMLDivElement>(null);
+  const historyRef = useRef<{role: string; content: string}[]>([]);
 
-  const current = steps[step];
-  const progress = ((step) / steps.length) * 100;
+  useEffect(() => {
+    synthRef.current = window.speechSynthesis;
+    if (synthRef.current) {
+      synthRef.current.onvoiceschanged = () => synthRef.current?.getVoices();
+      synthRef.current.getVoices();
+    }
+  }, []);
 
-  const handleSelect = (value: string) => {
-    const updated = { ...answers, [current.id]: value };
-    setAnswers(updated);
+  useEffect(() => {
+    msgsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [msgs]);
+
+  const openingMsg = "Before I build your plan, I want to actually understand your life — not have you fill out a form. Tell me honestly: what is going on right now? What feels heavy, off, or missing?";
+
+  function startMode(m: "voice" | "text") {
+    setMode(m);
+    if (m === "voice") initRecognition();
     setTimeout(() => {
-      if (step < steps.length - 1) {
-        setStep(step + 1);
-      } else {
-        handleComplete(updated);
+      atlasSpeak(openingMsg, m);
+    }, 600);
+  }
+
+  function initRecognition() {
+    const w = window as any;
+    const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
+    if (!SR) return;
+    const r = new SR();
+    r.continuous = false;
+    r.interimResults = true;
+    r.lang = "en-US";
+    r.onstart = () => { setListening(true); setTranscript(""); setStatus("Listening..."); };
+    r.onresult = (e: any) => {
+      let interim = "", final = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) final += e.results[i][0].transcript;
+        else interim += e.results[i][0].transcript;
       }
-    }, 200);
-  };
+      setTranscript(final || interim);
+      if (final) setTimeout(() => handleUser(final), 300);
+    };
+    r.onend = () => { setListening(false); setStatus("Tap the mic and speak freely"); };
+    r.onerror = () => { setListening(false); setStatus("Tap to try again"); };
+    recRef.current = r;
+  }
 
-  const handleTextNext = () => {
-    if (!textValue.trim()) return;
-    const updated = { ...answers, [current.id]: textValue.trim() };
-    setAnswers(updated);
-    handleComplete(updated);
-  };
+  function toggleMic() {
+    if (atlasSpeaking) return;
+    if (listening) {
+      (recRef.current as {stop:()=>void})?.stop();
+    } else {
+      if (!recRef.current) initRecognition();
+      try { (recRef.current as {start:()=>void})?.start(); } catch (e) { console.log(e); }
+    }
+  }
 
-  const handleComplete = (finalAnswers: Record<string, string>) => {
+  function atlasSpeak(text: string, currentMode?: string) {
+    const m = currentMode || mode;
+    addMsg("atlas", text);
+    historyRef.current.push({ role: "assistant", content: text });
+
+    if (m === "voice" && synthRef.current) {
+      synthRef.current.cancel();
+      const utt = new SpeechSynthesisUtterance(text);
+      utt.rate = 0.91; utt.pitch = 1.0;
+      const voices = synthRef.current.getVoices();
+      const preferred = voices.find(v =>
+        v.name.includes("Samantha") || v.name.includes("Karen") || v.name.includes("Daniel")
+      ) || voices.find(v => v.lang === "en-US") || voices[0];
+      if (preferred) utt.voice = preferred;
+      setAtlasSpeaking(true);
+      setStatus("Atlas is speaking...");
+      utt.onend = () => { setAtlasSpeaking(false); setStatus("Tap the mic and speak freely"); };
+      synthRef.current.speak(utt);
+    }
+  }
+
+  function addMsg(role: "atlas" | "user", content: string) {
+    setMsgs(prev => [...prev, { role, content }]);
+  }
+
+  async function handleUser(text: string) {
+    if (!text.trim() || loading) return;
+    addMsg("user", text);
+    historyRef.current.push({ role: "user", content: text });
+    setTranscript("");
+    setInput("");
     setLoading(true);
-    // Store in localStorage for now
-    localStorage.setItem("atlas_onboarding", JSON.stringify(finalAnswers));
-    setTimeout(() => {
-      router.push("/dashboard");
-    }, 1200);
-  };
+    setStatus("Atlas is thinking...");
 
-  if (loading) {
+    const newCount = exchangeCount + 1;
+    setExchangeCount(newCount);
+
+    try {
+      const res = await fetch("/api/interview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: text,
+          history: historyRef.current.slice(0, -1),
+        }),
+      });
+      const { reply } = await res.json();
+
+      if (reply.startsWith("PLAN_READY:") || newCount >= 6) {
+        const cleanReply = reply.replace("PLAN_READY:", "").trim();
+        if (cleanReply) atlasSpeak(cleanReply || "I have everything I need. Building your plan now...");
+        else atlasSpeak("I have heard enough. Let me build your personalized plan now.");
+        setTimeout(() => generatePlan(), 2500);
+      } else {
+        atlasSpeak(reply);
+      }
+    } catch {
+      atlasSpeak("Tell me more about that.");
+    }
+    setLoading(false);
+    setStatus("Tap the mic and speak freely");
+  }
+
+  async function generatePlan() {
+    setPhase("generating");
+    const transcript = historyRef.current
+      .map(m => `${m.role === "user" ? "User" : "Atlas"}: ${m.content}`)
+      .join("\n");
+
+    try {
+      const res = await fetch("/api/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript }),
+      });
+      const { plan } = await res.json();
+      localStorage.setItem("atlas_plan", JSON.stringify(plan));
+      localStorage.setItem("atlas_transcript", transcript);
+    } catch {
+      localStorage.setItem("atlas_plan", JSON.stringify({ category: "post-work", name: "" }));
+    }
+
+    setPhase("done");
+    setTimeout(() => router.push("/dashboard"), 800);
+  }
+
+  function sendText() {
+    if (!input.trim() || loading) return;
+    handleUser(input.trim());
+  }
+
+  // ─── CHOOSE SCREEN ───
+  if (mode === "choose") {
     return (
-      <div className="min-h-screen bg-[#0D0D0F] flex flex-col items-center justify-center">
-        <div className="text-center">
-          <div className="text-[#E8A34A] text-4xl mb-6">◈</div>
-          <p className="font-display text-2xl text-[#F5F5FA] mb-3">Setting up your coach...</p>
-          <p className="text-[#6B6B7B] text-sm">Personalizing your daily plan</p>
-          <div className="mt-8 flex gap-1.5 justify-center">
-            {[0, 1, 2].map((i) => (
-              <div
-                key={i}
-                className="w-2 h-2 rounded-full bg-[#E8A34A]"
-                style={{ animation: `pulse 1s ${i * 0.2}s infinite` }}
-              />
-            ))}
+      <div style={{ minHeight: "100vh", background: "#fff", display: "flex", flexDirection: "column" }}>
+        {/* Green top bar */}
+        <div style={{ background: "#1E5C40", padding: "14px 24px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 30, height: 30, borderRadius: 7, background: "#D95F2B", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Georgia,serif", fontSize: 15, color: "#fff", fontWeight: 900 }}>A</div>
+            <span style={{ fontSize: 14, fontWeight: 600, color: "rgba(255,255,255,0.9)" }}>Atlas</span>
+          </div>
+          <span style={{ fontSize: 12, color: "rgba(255,255,255,0.45)" }}>Your daily life coach</span>
+        </div>
+
+        {/* Hero */}
+        <div style={{ padding: "48px 28px 32px", maxWidth: 480, margin: "0 auto", width: "100%" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, fontWeight: 600, letterSpacing: "0.16em", textTransform: "uppercase", color: "#2A7A56", marginBottom: 20 }}>
+            <div style={{ width: 5, height: 5, borderRadius: "50%", background: "#D95F2B" }} />
+            Start your coaching today
+          </div>
+          <h1 style={{ fontFamily: "Georgia,serif", fontSize: "clamp(34px,8vw,48px)", fontWeight: 900, lineHeight: 1.1, color: "#1A1714", marginBottom: 16, letterSpacing: "-0.02em" }}>
+            The coach who shows up<br />
+            for you <em style={{ fontStyle: "italic", color: "#1E5C40" }}>every day.</em>
+          </h1>
+          <p style={{ fontSize: 16, color: "#6B6560", lineHeight: 1.75, marginBottom: 36, fontWeight: 300, maxWidth: 360 }}>
+            Tell Atlas what&apos;s going on. It listens, asks the right questions, and builds a plan around your actual life — not a template.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, width: "100%" }}>
+            <button onClick={() => startMode("voice")} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: "#1E5C40", color: "#fff", border: "none", borderRadius: 14, padding: "17px 24px", fontSize: 16, fontWeight: 600, cursor: "pointer", fontFamily: "system-ui,sans-serif", boxShadow: "0 4px 16px rgba(30,92,64,0.20)", width: "100%" }}>
+              🎙&nbsp;&nbsp;Speak to Atlas
+            </button>
+            <button onClick={() => startMode("text")} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#F8F6F2", color: "#6B6560", border: "1.5px solid #E8E2DA", borderRadius: 14, padding: "15px 24px", fontSize: 15, cursor: "pointer", fontFamily: "system-ui,sans-serif", width: "100%" }}>
+              ✏️&nbsp;&nbsp;I prefer to type
+            </button>
           </div>
         </div>
-        <style jsx>{`
-          @keyframes pulse {
-            0%, 100% { opacity: 0.3; transform: scale(0.8); }
-            50% { opacity: 1; transform: scale(1); }
-          }
-        `}</style>
+
+        {/* Features */}
+        <div style={{ padding: "0 28px", maxWidth: 480, margin: "0 auto", width: "100%", display: "flex", flexDirection: "column", gap: 12, marginBottom: 28 }}>
+          {[
+            { icon: "🎙", title: "Real interview, not a form", desc: "Atlas asks follow-up questions based on what you actually say." },
+            { icon: "📅", title: "One task, every morning", desc: "Clear and specific. Not a list. One thing you can actually do today." },
+            { icon: "🌙", title: "Atlas checks in every night", desc: "Did you do it? Tomorrow adjusts based on your honest answer." },
+          ].map((f, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+              <div style={{ width: 32, height: 32, borderRadius: 8, background: "#FDF3EE", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 16 }}>{f.icon}</div>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#1A1714", marginBottom: 2 }}>{f.title}</div>
+                <div style={{ fontSize: 13, color: "#6B6560", lineHeight: 1.5, fontWeight: 300 }}>{f.desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Proof */}
+        <div style={{ padding: "0 28px 0", maxWidth: 480, margin: "0 auto", width: "100%" }}>
+          <div style={{ background: "#EEF6F1", border: "1px solid rgba(30,92,64,0.12)", borderRadius: 16, padding: 20 }}>
+            <div style={{ fontFamily: "Georgia,serif", fontStyle: "italic", fontSize: 14, color: "#1A1714", lineHeight: 1.7, marginBottom: 12 }}>
+              &ldquo;I didn&apos;t expect it to actually listen. It asked me a follow-up I wasn&apos;t ready for. That&apos;s when I knew this was different.&rdquo;
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ color: "#D95F2B", fontSize: 13, letterSpacing: 1 }}>★★★★★</span>
+              <span style={{ fontSize: 12, color: "#6B6560", fontWeight: 500 }}>Marco R. &nbsp;·&nbsp; Day 23 &nbsp;·&nbsp; Post-Work Reset</span>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginTop: "auto", background: "#F8F6F2", borderTop: "1px solid #E8E2DA", padding: "16px 28px", textAlign: "center", fontSize: 12, color: "#A09890", lineHeight: 1.65 }}>
+          7-day free trial &nbsp;·&nbsp; $14.99/month &nbsp;·&nbsp; Cancel anytime<br />
+          Works on iPhone, Android, and browser
+        </div>
       </div>
     );
   }
 
+  // ─── GENERATING SCREEN ───
+  if (phase === "generating" || phase === "done") {
+    return (
+      <div style={{ minHeight: "100vh", background: "#1E5C40", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 40, textAlign: "center" }}>
+        <div style={{ width: 64, height: 64, borderRadius: 16, background: "#D95F2B", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Georgia,serif", fontSize: 30, color: "#fff", fontWeight: 900, marginBottom: 28, animation: "pulse 2s infinite" }}>A</div>
+        <p style={{ fontFamily: "Georgia,serif", fontSize: 24, color: "#fff", fontWeight: 700, marginBottom: 12 }}>Building your plan...</p>
+        <p style={{ fontSize: 14, color: "rgba(255,255,255,0.6)", lineHeight: 1.6, maxWidth: 280 }}>Atlas is personalizing everything based on what you shared.</p>
+        <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.7}}`}</style>
+      </div>
+    );
+  }
+
+  // ─── INTERVIEW SCREEN ───
   return (
-    <div className="min-h-screen bg-[#0D0D0F] flex flex-col">
-      {/* Top bar */}
-      <div className="px-6 pt-6 pb-4">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <span className="text-[#E8A34A]">◈</span>
-            <span className="text-sm text-[#6B6B7B]">Atlas</span>
-          </div>
-          <span className="text-xs text-[#6B6B7B]">{step + 1} of {steps.length}</span>
+    <div style={{ minHeight: "100vh", background: "#18171A", display: "flex", flexDirection: "column" }}>
+      {/* Bar */}
+      <div style={{ padding: "16px 20px", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", gap: 12, background: "#211F24", flexShrink: 0 }}>
+        <div style={{ width: 36, height: 36, borderRadius: 9, background: "#1E5C40", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Georgia,serif", fontSize: 16, color: "#fff", fontWeight: 900, flexShrink: 0 }}>A</div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "#F0EDE8" }}>Atlas</div>
+          <div style={{ fontSize: 12, color: "#7A7680" }}>{loading ? "Thinking..." : "Your coach · Listening"}</div>
         </div>
-        {/* Progress bar */}
-        <div className="h-0.5 bg-[#1E1E24] rounded-full overflow-hidden">
-          <div
-            className="h-full bg-[#E8A34A] rounded-full transition-all duration-500"
-            style={{ width: `${progress}%` }}
-          />
-        </div>
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 flex flex-col justify-center px-6 pb-12 max-w-lg mx-auto w-full">
-        <h2 className="font-display text-2xl md:text-3xl text-[#F5F5FA] mb-2 leading-snug">
-          {current.question}
-        </h2>
-        <p className="text-sm text-[#6B6B7B] mb-8">{current.subtitle}</p>
-
-        {current.type === "cards" && (
-          <div className="grid gap-3">
-            {current.options?.map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => handleSelect(opt.value)}
-                className={`flex items-center gap-4 p-4 rounded-2xl border text-left transition-all hover:border-[#E8A34A] ${
-                  answers[current.id] === opt.value
-                    ? "bg-[rgba(232,163,74,0.1)] border-[#E8A34A]"
-                    : "bg-[#141417] border-[#2A2A33]"
-                }`}
-              >
-                <span className="text-2xl">{opt.emoji}</span>
-                <div>
-                  <div className="text-sm font-medium text-[#F5F5FA]">{opt.label}</div>
-                  <div className="text-xs text-[#6B6B7B] mt-0.5">{opt.desc}</div>
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-
-        {current.type === "text" && (
-          <div className="space-y-4">
-            <input
-              type="text"
-              value={textValue}
-              onChange={(e) => setTextValue(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleTextNext()}
-              placeholder={current.placeholder}
-              autoFocus
-              className="w-full bg-[#141417] border border-[#2A2A33] rounded-2xl px-5 py-4 text-lg text-[#F5F5FA] placeholder-[#6B6B7B] focus:outline-none focus:border-[#E8A34A] transition-colors"
-            />
-            <button
-              onClick={handleTextNext}
-              disabled={!textValue.trim()}
-              className="w-full bg-[#E8A34A] text-[#0D0D0F] font-semibold py-4 rounded-2xl hover:bg-[#C4862C] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-            >
-              Start my coaching →
+        {/* Mode toggle */}
+        <div style={{ display: "flex", background: "#2C2A30", borderRadius: 8, padding: 3 }}>
+          {(["voice", "text"] as const).map(m => (
+            <button key={m} onClick={() => { setMode(m); if (m === "voice") initRecognition(); }} style={{ padding: "5px 12px", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 12, fontFamily: "system-ui,sans-serif", transition: "all 0.2s", background: mode === m ? "#1E5C40" : "transparent", color: mode === m ? "#fff" : "#7A7680", fontWeight: mode === m ? 600 : 400 }}>
+              {m === "voice" ? "🎙 Voice" : "✏️ Text"}
             </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Messages */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "22px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
+        {msgs.map((msg, i) => (
+          <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-end", flexDirection: msg.role === "user" ? "row-reverse" : "row" }}>
+            {msg.role === "atlas" && (
+              <div style={{ width: 28, height: 28, borderRadius: 7, background: "#1E5C40", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Georgia,serif", fontSize: 12, color: "#fff", fontWeight: 900, flexShrink: 0 }}>A</div>
+            )}
+            <div style={{ maxWidth: "83%", padding: "13px 17px", borderRadius: 18, fontSize: 15, lineHeight: 1.68, ...(msg.role === "atlas" ? { background: "#2C2A30", border: "1px solid rgba(255,255,255,0.07)", color: "#F0EDE8", borderBottomLeftRadius: 4, fontFamily: "Georgia,serif", fontStyle: "italic" } : { background: "#D95F2B", color: "#fff", borderBottomRightRadius: 4, fontFamily: "system-ui,sans-serif", fontSize: 14, fontStyle: "normal", fontWeight: 500 }) }}>
+              {msg.content}
+            </div>
+          </div>
+        ))}
+        {loading && (
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+            <div style={{ width: 28, height: 28, borderRadius: 7, background: "#1E5C40", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Georgia,serif", fontSize: 12, color: "#fff", fontWeight: 900 }}>A</div>
+            <div style={{ background: "#2C2A30", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 18, borderBottomLeftRadius: 4, padding: "14px 17px", display: "flex", gap: 5 }}>
+              {[0, 1, 2].map(i => (
+                <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: "#7A7680", animation: `bounce 1.2s ${i * 0.15}s infinite` }} />
+              ))}
+            </div>
+          </div>
+        )}
+        <div ref={msgsEndRef} />
+      </div>
+
+      {/* Input area */}
+      <div style={{ flexShrink: 0, padding: "18px 20px 28px", borderTop: "1px solid rgba(255,255,255,0.07)", background: "#211F24" }}>
+
+        {/* Voice UI */}
+        {mode === "voice" && (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+            <div style={{ fontSize: 13, color: "#7A7680", textAlign: "center" }}>{status}</div>
+            <div style={{ fontSize: 14, color: "#F0EDE8", fontFamily: "Georgia,serif", fontStyle: "italic", minHeight: 20, textAlign: "center", maxWidth: 280, lineHeight: 1.5, opacity: 0.8 }}>{transcript}</div>
+            <button onClick={toggleMic} style={{ width: 64, height: 64, borderRadius: "50%", background: listening ? "#C0392B" : atlasSpeaking ? "#2C2A30" : "#1E5C40", border: atlasSpeaking ? "2px solid #1E5C40" : "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: atlasSpeaking ? "not-allowed" : "pointer", fontSize: 24, transition: "all 0.2s", boxShadow: listening ? "0 0 0 0 rgba(192,57,43,0.5)" : "0 4px 18px rgba(30,92,64,0.30)", animation: listening ? "micRing 1s infinite" : "none" }}>
+              {atlasSpeaking ? "🔊" : listening ? "⏹" : "🎙"}
+            </button>
+            <div style={{ fontSize: 11, color: "rgba(122,118,128,0.55)", letterSpacing: "0.04em" }}>Tap to start · tap again to stop</div>
+          </div>
+        )}
+
+        {/* Text UI */}
+        {mode === "text" && (
+          <div style={{ display: "flex", gap: 10 }}>
+            <textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendText(); } }} placeholder="Type freely here..." rows={2} style={{ flex: 1, background: "#2C2A30", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 12, padding: "12px 15px", fontSize: 15, color: "#F0EDE8", fontFamily: "system-ui,sans-serif", outline: "none", resize: "none", lineHeight: 1.5 }} />
+            <button onClick={sendText} disabled={loading || !input.trim()} style={{ width: 44, height: 44, background: "#1E5C40", border: "none", borderRadius: 12, cursor: "pointer", fontSize: 16, color: "#fff", flexShrink: 0, alignSelf: "flex-end", fontWeight: 700, opacity: loading || !input.trim() ? 0.4 : 1 }}>↑</button>
           </div>
         )}
       </div>
+
+      <style>{`
+        @keyframes bounce {
+          0%,80%,100% { transform: scale(0.6); opacity: 0.3; }
+          40% { transform: scale(1); opacity: 1; }
+        }
+        @keyframes micRing {
+          0% { box-shadow: 0 0 0 0 rgba(192,57,43,0.5); }
+          70% { box-shadow: 0 0 0 14px rgba(192,57,43,0); }
+          100% { box-shadow: 0 0 0 0 rgba(192,57,43,0); }
+        }
+      `}</style>
     </div>
   );
 }

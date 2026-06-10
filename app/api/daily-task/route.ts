@@ -1,18 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const categoryPrompts: Record<string, string> = {
-  "post-work": "You are coaching someone on how to reset and decompress after work. Help them disconnect from work stress and be present at home.",
-  "new-parent": "You are coaching a new parent through the early months of parenthood. Give practical, specific daily guidance.",
-  "sleep": "You are coaching someone who struggles with sleep. Give them a specific sleep hygiene task to work on today.",
-  "cooking": "You are coaching a complete beginner learning to cook for the first time. Start from absolute zero.",
-  "memory": "You are coaching someone who wants to retain information better and stop forgetting things.",
-  "marriage": "You are coaching someone who wants to be a better partner and keep their relationship strong despite a busy life.",
+const categoryContext: Record<string, string> = {
+  "post-work": "helping someone decompress after work and be present at home",
+  "new-parent": "coaching a new parent through the early months of parenthood",
+  "sleep": "coaching someone who struggles to wind down and sleep",
+  "cooking": "teaching a complete beginner to cook, starting from absolute zero",
+  "memory": "coaching someone who wants to retain information and stop forgetting things",
+  "marriage": "coaching someone to be a better partner and stay present with family",
+  "general": "daily life coaching for someone building better habits",
 };
 
 const levelContext: Record<string, string> = {
-  "overwhelmed": "This person is overwhelmed and needs very small, achievable tasks — one thing only.",
-  "stuck": "This person knows what to do but can't start. Give them a very concrete first step.",
-  "building": "This person has some momentum. Give them a slightly more challenging task.",
+  "overwhelmed": "This person is overwhelmed. Give a very small, achievable single task.",
+  "stuck": "This person knows what to do but cannot start. Give a very concrete first step.",
+  "building": "This person has some momentum. Give a slightly more challenging task.",
   "optimizing": "This person is doing well. Push them a little further today.",
 };
 
@@ -20,47 +21,45 @@ export async function POST(req: NextRequest) {
   try {
     const { category, name, level, day } = await req.json();
 
-    const categoryContext = categoryPrompts[category] || categoryPrompts["post-work"];
-    const levelCtx = levelContext[level] || levelContext["overwhelmed"];
+    const ctx = categoryContext[category] || categoryContext["general"];
+    const lvl = levelContext[level] || levelContext["building"];
 
-    const prompt = `${categoryContext}
+    const systemInstruction = `You are Atlas, a daily life coach focused on ${ctx}.
 
-Context: ${levelCtx}
+${lvl}
 
-This is Day ${day} of coaching for ${name}.
+Generate ONE specific coaching task for Day ${day} for ${name || "this person"}.
 
-Generate ONE specific coaching task for today. Requirements:
-- It must be something they can do TODAY, within the next few hours
-- It must be very specific and actionable — not vague advice
-- It should take 5-30 minutes maximum
-- End with a brief note that you'll check in tonight
-- Write in second person, warm but direct tone
-- Maximum 3 sentences
-- Do NOT use bullet points or lists
-- Make it feel like it comes from a real coach who knows them
+Requirements:
+- Something they can do TODAY in the next few hours
+- Very specific and actionable — not vague advice
+- Takes 5-30 minutes maximum
+- End with a brief note that you will check in tonight
+- Warm but direct tone, second person
+- Maximum 3 sentences, no bullet points
+- Make it feel personal, not generic
 
-Return only the task text. No preamble, no "Day 1:", nothing else.`;
+Return only the task text. Nothing else.`;
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY || "",
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 200,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemInstruction }] },
+          contents: [{ role: "user", parts: [{ text: "Generate today's coaching task." }] }],
+          generationConfig: { maxOutputTokens: 150, temperature: 0.9 },
+        }),
+      }
+    );
 
     const data = await response.json();
-    const task = data.content?.[0]?.text || "";
+    const task = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
     return NextResponse.json({ task });
   } catch (error) {
-    console.error("Daily task error:", error);
+    console.error(error);
     return NextResponse.json({ task: "" }, { status: 500 });
   }
 }

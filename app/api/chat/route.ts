@@ -1,64 +1,61 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const systemPrompts: Record<string, string> = {
-  "post-work": "You are Atlas, a daily life coach specializing in helping people decompress and reset after work. You help them disconnect from work stress, be present with their family, and build healthy after-work routines.",
-  "new-parent": "You are Atlas, a daily life coach specializing in new parent survival. You help parents navigate the first year with their baby — sleep schedules, routines, self-care, and the emotional side of parenthood.",
-  "sleep": "You are Atlas, a daily life coach specializing in sleep mastery. You help people build better sleep habits, wind-down routines, and understand why they struggle to rest.",
-  "cooking": "You are Atlas, a daily life coach teaching adults how to cook from absolute zero. You assume they know nothing and teach fundamentals first — kitchen setup, basic techniques, simple meals.",
-  "memory": "You are Atlas, a daily life coach helping people retain information better. You teach memory techniques like spaced repetition, anchoring, and review strategies.",
-  "marriage": "You are Atlas, a daily life coach helping people be better partners and parents. You give practical daily actions to strengthen relationships amid busy lives.",
+const categoryContext: Record<string, string> = {
+  "post-work": "You specialize in helping people decompress after work, disconnect from job stress, and be present at home.",
+  "new-parent": "You specialize in new parent survival — baby schedules, sleep, self-care, and the emotional side of early parenthood.",
+  "sleep": "You specialize in sleep mastery — wind-down routines, sleep hygiene, and understanding what keeps people awake.",
+  "cooking": "You specialize in teaching adults to cook from absolute zero. You start with kitchen setup and basic techniques.",
+  "memory": "You specialize in memory training — spaced repetition, anchoring, and daily retention habits.",
+  "marriage": "You specialize in helping people be better partners and parents despite busy lives.",
+  "general": "You are a daily life coach helping people build better habits and routines.",
 };
 
 export async function POST(req: NextRequest) {
   try {
-    const { message, category, name, level, history } = await req.json();
+    const { message, category, name, history } = await req.json();
 
-    const systemPrompt = `${systemPrompts[category] || systemPrompts["post-work"]}
+    const ctx = categoryContext[category] || categoryContext["general"];
 
-You are coaching ${name}. Their current state: ${level}.
+    const systemInstruction = `You are Atlas, a personal daily life coach. ${ctx}
 
-Your coaching style:
+You are coaching ${name || "this person"}.
+
+Coaching style:
 - Warm but direct. Like a great teacher — firm, caring, specific.
-- Never give generic advice. Always be specific to their situation.
-- Ask follow-up questions when you need more context.
-- Keep responses concise — 2-4 sentences max unless they need more.
+- Never give generic advice. Always specific to what they tell you.
+- Keep responses concise — 2-4 sentences unless they need more.
 - No bullet points. Speak naturally.
 - If they say they did something, acknowledge it and build on it.
-- If they didn't do something, don't judge — adjust and try again.
+- If they didn't, don't judge — adjust and try again.
 - You remember everything they tell you in this conversation.
-- You are NOT ChatGPT. You are their personal coach. Act like it.
+- You are their coach, not a chatbot.
+- This is NOT therapy. If mental health issues arise, direct them to a professional.`;
 
-Important: This is NOT a therapy session. You are a life skills coach. If someone mentions serious mental health issues, direct them to a professional.`;
+    const contents = (history || []).map((m: {role: string; text: string}) => ({
+      role: m.role === "coach" ? "model" : "user",
+      parts: [{ text: m.text }],
+    }));
+    contents.push({ role: "user", parts: [{ text: message }] });
 
-    const messages = [
-      ...(history || []).map((m: { role: string; text: string }) => ({
-        role: m.role === "coach" ? "assistant" : "user",
-        content: m.text,
-      })),
-      { role: "user", content: message },
-    ];
-
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY || "",
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 300,
-        system: systemPrompt,
-        messages,
-      }),
-    });
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemInstruction }] },
+          contents,
+          generationConfig: { maxOutputTokens: 300, temperature: 0.7 },
+        }),
+      }
+    );
 
     const data = await response.json();
-    const reply = data.content?.[0]?.text || "I'm having trouble connecting right now. Try again in a moment.";
+    const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || "Let me think about that. Tell me more.";
 
     return NextResponse.json({ reply });
   } catch (error) {
-    console.error("Chat error:", error);
+    console.error(error);
     return NextResponse.json({ reply: "Something went wrong. Try again." }, { status: 500 });
   }
 }

@@ -1,374 +1,318 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
 
-const categoryMap: Record<string, { emoji: string; label: string }> = {
-  "post-work": { emoji: "🌇", label: "Post-Work Reset" },
-  "new-parent": { emoji: "👶", label: "New Parent Survival" },
-  "sleep": { emoji: "😴", label: "Sleep Mastery" },
-  "cooking": { emoji: "🍳", label: "Cooking From Zero" },
-  "memory": { emoji: "🧠", label: "Memory Training" },
-  "marriage": { emoji: "💑", label: "Marriage & Family" },
-};
-
-const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-
-type Message = { role: "coach" | "user"; text: string };
+type Msg = { role: "coach" | "user"; text: string };
 
 export default function Dashboard() {
-  const [onboarding, setOnboarding] = useState<Record<string, string>>({});
-  const [tab, setTab] = useState<"today" | "chat" | "streak">("today");
-  const [checkedIn, setCheckedIn] = useState(false);
-  const [taskDone, setTaskDone] = useState<boolean | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
+  const router = useRouter();
+  const [plan, setPlan] = useState<Record<string, unknown>>({});
+  const [tab, setTab] = useState<"today" | "chat" | "progress">("today");
   const [dayTask, setDayTask] = useState("");
   const [taskLoading, setTaskLoading] = useState(true);
+  const [checkedIn, setCheckedIn] = useState(false);
+  const [done, setDone] = useState<boolean | null>(null);
+  const [msgs, setMsgs] = useState<Msg[]>([]);
+  const [input, setInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
   const [streak] = useState(1);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+
   const now = new Date();
+  const days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const hour = now.getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
 
   useEffect(() => {
-    const stored = localStorage.getItem("atlas_onboarding");
-    if (stored) {
-      const data = JSON.parse(stored);
-      setOnboarding(data);
-      generateDailyTask(data);
-    } else {
-      setOnboarding({ category: "post-work", name: "there", time: "both", level: "overwhelmed" });
-      generateDailyTask({ category: "post-work", name: "there", time: "both", level: "overwhelmed" });
-    }
-  }, []);
+    const stored = localStorage.getItem("atlas_plan");
+    if (!stored) { router.push("/onboarding"); return; }
+    const p = JSON.parse(stored);
+    setPlan(p);
+    generateTask(p);
+  }, [router]);
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs]);
 
-  const generateDailyTask = async (data: Record<string, string>) => {
+  async function generateTask(p: Record<string, unknown>) {
     setTaskLoading(true);
     try {
       const res = await fetch("/api/daily-task", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          category: data.category || "post-work",
-          name: data.name || "there",
-          level: data.level || "overwhelmed",
-          day: streak,
-        }),
+        body: JSON.stringify({ category: p.category, name: p.name, level: "building", day: streak }),
       });
-      const json = await res.json();
-      setDayTask(json.task || fallbackTask(data.category));
+      const { task } = await res.json();
+      setDayTask(task || String(p.day1 || ""));
     } catch {
-      setDayTask(fallbackTask(data.category));
+      setDayTask(String(p.day1 || "Take 10 minutes for yourself tonight. No screens. Let the day decompress."));
     }
     setTaskLoading(false);
-  };
+  }
 
-  const fallbackTask = (category: string) => {
-    const tasks: Record<string, string> = {
-      "post-work": "Before you open your phone or turn on the TV — take 10 minutes for yourself. Sit somewhere quiet. No screens. Just breathe and let the day decompress. Tell me tonight how it felt.",
-      "new-parent": "Track your baby's wake windows today. Every time they wake up, note the time. By tonight you'll have a pattern — and that pattern is your first coaching data.",
-      "sleep": "Tonight, no screens 30 minutes before bed. Replace it with something analog — a book, a notebook, even just sitting. Report back in the morning.",
-      "cooking": "Today's task: learn to boil water properly. Yes, really. Fill a pot 2/3 full. High heat. Watch it. Don't leave it. This is Day 1.",
-      "memory": "Write down 3 things you want to remember from today — before you go to sleep. Keep it next to your bed. Tomorrow I'll ask you what they were.",
-      "marriage": "One question for your partner tonight: 'What's one thing I can do for you this week?' Listen. Don't solve. Just hear them.",
-    };
-    return tasks[category] || tasks["post-work"];
-  };
+  function handleCheckIn(d: boolean) {
+    setDone(d);
+    setCheckedIn(true);
+    const reply = d
+      ? "That is real progress. Day 1 done. Tomorrow I build on exactly what you started. How did it actually feel?"
+      : "That is okay. Life happens. Tell me what got in the way — one sentence is enough. I will adjust tomorrow.";
+    setMsgs([{ role: "coach", text: reply }]);
+    setTab("chat");
+  }
 
-  const sendMessage = async () => {
-    if (!input.trim() || loading) return;
-    const userMsg = input.trim();
+  async function sendMsg() {
+    if (!input.trim() || chatLoading) return;
+    const text = input.trim();
     setInput("");
-    setMessages((prev) => [...prev, { role: "user", text: userMsg }]);
-    setLoading(true);
-
+    setMsgs(prev => [...prev, { role: "user", text }]);
+    setChatLoading(true);
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: userMsg,
-          category: onboarding.category || "post-work",
-          name: onboarding.name || "there",
-          level: onboarding.level || "overwhelmed",
-          history: messages,
-        }),
+        body: JSON.stringify({ message: text, category: plan.category, name: plan.name, level: "building", history: msgs }),
       });
-      const json = await res.json();
-      setMessages((prev) => [...prev, { role: "coach", text: json.reply }]);
+      const { reply } = await res.json();
+      setMsgs(prev => [...prev, { role: "coach", text: reply }]);
     } catch {
-      setMessages((prev) => [...prev, { role: "coach", text: "I'm having trouble connecting right now. Try again in a moment." }]);
+      setMsgs(prev => [...prev, { role: "coach", text: "Let me think about that. Try again in a moment." }]);
     }
-    setLoading(false);
-  };
+    setChatLoading(false);
+  }
 
-  const handleCheckIn = (done: boolean) => {
-    setTaskDone(done);
-    setCheckedIn(true);
-    const response = done
-      ? `That's real progress. Day ${streak} done. Tomorrow I'll build on what you started.`
-      : `That's okay. Life happens. Tomorrow we try again — and I'll adjust the task based on what got in the way.`;
-    setMessages([{ role: "coach", text: response }]);
-    setTab("chat");
+  const catLabels: Record<string, string> = {
+    "post-work": "Post-Work Reset", "new-parent": "New Parent Survival",
+    "sleep": "Sleep Mastery", "cooking": "Cooking From Zero",
+    "memory": "Memory Training", "marriage": "Family & Presence",
+    "general": "Daily Coaching",
   };
+  const catLabel = catLabels[String(plan.category || "general")] || "Daily Coaching";
+  const name = String(plan.name || "");
 
-  const cat = categoryMap[onboarding.category] || categoryMap["post-work"];
-  const name = onboarding.name || "there";
-  const hour = now.getHours();
-  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const S = {
+    shell: { maxWidth: 420, margin: "0 auto", minHeight: "100vh", display: "flex", flexDirection: "column" as const, background: "#fff", borderLeft: "1px solid #E8E2DA", borderRight: "1px solid #E8E2DA" },
+    header: { padding: "22px 20px 16px", background: "#1E5C40", flexShrink: 0 as const },
+    headerTop: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
+    logo: { display: "flex", alignItems: "center", gap: 8 },
+    logoMark: { width: 26, height: 26, borderRadius: 6, background: "#D95F2B", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Georgia,serif", fontSize: 13, color: "#fff", fontWeight: 900 },
+    logoName: { fontSize: 13, color: "rgba(255,255,255,0.6)" },
+    headerDate: { fontSize: 12, color: "rgba(255,255,255,0.4)" },
+    greeting: { fontFamily: "Georgia,serif", fontSize: 22, color: "#fff", fontWeight: 700, marginBottom: 6 },
+    catPill: { display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(217,95,43,0.20)", borderRadius: 20, padding: "3px 10px 3px 8px" },
+    catDot: { width: 6, height: 6, borderRadius: 2, background: "#D95F2B" },
+    catText: { fontSize: 12, color: "#D95F2B", fontWeight: 500 },
+    dayBadge: { fontSize: 12, color: "rgba(255,255,255,0.4)", marginLeft: 8 },
+    tabs: { display: "flex", background: "#1E5C40", borderBottom: "1px solid rgba(255,255,255,0.1)", padding: "0 20px", flexShrink: 0 as const },
+    tab: (active: boolean) => ({ padding: "12px 16px", fontSize: 13, cursor: "pointer", border: "none", background: "transparent", fontFamily: "system-ui,sans-serif", transition: "color 0.2s", position: "relative" as const, color: active ? "#fff" : "rgba(255,255,255,0.4)" }),
+    tabLine: { position: "absolute" as const, bottom: 0, left: 0, right: 0, height: 2, background: "#D95F2B", borderRadius: 2 },
+    content: { flex: 1, overflowY: "auto" as const },
+    pad: { padding: 20, display: "flex", flexDirection: "column" as const, gap: 14 },
+    taskCard: { background: "#EEF6F1", borderRadius: 16, padding: 20, border: "1px solid rgba(30,92,64,0.12)" },
+    taskHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 },
+    taskLabel: { fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase" as const, color: "#1E5C40" },
+    dayTag: { fontSize: 11, background: "#1E5C40", color: "#fff", padding: "3px 10px", borderRadius: 20, fontWeight: 600 },
+    taskText: { fontFamily: "Georgia,serif", fontStyle: "italic" as const, fontSize: 16, lineHeight: 1.65, color: "#1A1714", marginBottom: 14, borderLeft: "3px solid #D95F2B", paddingLeft: 14 },
+    taskCoach: { display: "flex", alignItems: "center", gap: 8 },
+    taskAv: { width: 24, height: 24, borderRadius: "50%", background: "#1E5C40", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Georgia,serif", fontSize: 10, color: "#fff", fontWeight: 700, flexShrink: 0 },
+    taskCoachText: { fontSize: 12, color: "#6B6560" },
+    shimmer: { height: 16, background: "#D4EDE1", borderRadius: 6, marginBottom: 8, animation: "shimmer 1.5s infinite" },
+    checkCard: { background: "#fff", borderRadius: 16, padding: 18, border: "1px solid #E8E2DA" },
+    checkLabel: { fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase" as const, color: "#A09890", marginBottom: 10 },
+    checkQ: { fontFamily: "Georgia,serif", fontSize: 16, color: "#1A1714", fontWeight: 700, marginBottom: 14 },
+    checkBtns: { display: "flex", gap: 10 },
+    btnYes: { flex: 1, background: "#1E5C40", color: "#fff", border: "none", borderRadius: 10, padding: 12, fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "system-ui,sans-serif" },
+    btnNo: { flex: 1, background: "#F8F6F2", color: "#6B6560", border: "none", borderRadius: 10, padding: 12, fontSize: 14, cursor: "pointer", fontFamily: "system-ui,sans-serif" },
+    tmrCard: { background: "#F8F6F2", borderRadius: 16, padding: 18, border: "1px solid #E8E2DA", opacity: 0.6 },
+    chatWrap: { display: "flex", flexDirection: "column" as const, height: 500 },
+    chatMsgs: { flex: 1, padding: 20, overflowY: "auto" as const, display: "flex", flexDirection: "column" as const, gap: 14 },
+    chatEmpty: { display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center", height: "100%", textAlign: "center" as const, padding: 20 },
+    chatEmptyMark: { width: 52, height: 52, borderRadius: 14, background: "#1E5C40", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Georgia,serif", fontSize: 22, color: "#fff", fontWeight: 900, marginBottom: 16 },
+    chatInputBar: { padding: "14px 16px", borderTop: "1px solid #E8E2DA", display: "flex", gap: 10 },
+    chatInput: { flex: 1, background: "#F8F6F2", border: "1.5px solid #E8E2DA", borderRadius: 10, padding: "11px 16px", fontSize: 15, color: "#1A1714", fontFamily: "system-ui,sans-serif", outline: "none", transition: "border-color 0.2s" },
+    chatSend: { width: 44, height: 44, background: "#1E5C40", border: "none", borderRadius: 10, cursor: "pointer", fontSize: 15, color: "#fff", fontWeight: 700 },
+    progWrap: { padding: 20, display: "flex", flexDirection: "column" as const, gap: 14 },
+    streakHero: { background: "#1E5C40", borderRadius: 16, padding: 24, textAlign: "center" as const },
+    streakNum: { fontFamily: "Georgia,serif", fontSize: 72, color: "#fff", fontWeight: 900, lineHeight: 1 },
+    streakSub: { fontSize: 13, color: "rgba(255,255,255,0.5)", marginTop: 4 },
+    streakQ: { fontFamily: "Georgia,serif", fontStyle: "italic" as const, fontSize: 14, color: "rgba(255,255,255,0.7)", marginTop: 12 },
+    grid: { display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 6 },
+    statCards: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 },
+    statCard: { background: "#EEF6F1", borderRadius: 14, padding: 16, border: "1px solid rgba(30,92,64,0.10)" },
+    statLabel: { fontSize: 11, color: "#A09890", textTransform: "uppercase" as const, letterSpacing: "0.08em", marginBottom: 6, fontWeight: 600 },
+    statVal: { fontSize: 14, color: "#1A1714", fontWeight: 600 },
+    bnav: { borderTop: "1px solid #E8E2DA", display: "flex", padding: "10px 0 20px", background: "#fff", position: "sticky" as const, bottom: 0 },
+    bnavItem: (active: boolean) => ({ flex: 1, display: "flex", flexDirection: "column" as const, alignItems: "center", gap: 4, color: active ? "#1E5C40" : "#BFB09A", border: "none", background: "none", cursor: "pointer", padding: "6px 0" }),
+  };
 
   return (
-    <div className="min-h-screen bg-[#0D0D0F] text-[#F5F5FA] flex flex-col max-w-lg mx-auto">
-
-      {/* Header */}
-      <div className="px-5 pt-8 pb-4">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[#E8A34A] text-sm">◈ Atlas</span>
-          <span className="text-xs text-[#6B6B7B]">
-            {dayNames[now.getDay()]}, {monthNames[now.getMonth()]} {now.getDate()}
-          </span>
+    <div style={{ background: "#F0ECE4", minHeight: "100vh" }}>
+      <div style={S.shell}>
+        {/* Header */}
+        <div style={S.header}>
+          <div style={S.headerTop}>
+            <div style={S.logo}>
+              <div style={S.logoMark}>A</div>
+              <span style={S.logoName}>Atlas</span>
+            </div>
+            <span style={S.headerDate}>{days[now.getDay()]}, {months[now.getMonth()]} {now.getDate()}</span>
+          </div>
+          <div style={S.greeting}>{greeting}{name ? `, ${name}` : ""}.</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={S.catPill}>
+              <div style={S.catDot} />
+              <span style={S.catText}>{catLabel}</span>
+            </div>
+            <span style={S.dayBadge}>Day {streak}</span>
+          </div>
         </div>
-        <h1 className="font-display text-2xl">
-          {greeting}, {name}.
-        </h1>
-        <div className="flex items-center gap-2 mt-2">
-          <span className="text-sm">{cat.emoji}</span>
-          <span className="text-xs text-[#6B6B7B]">{cat.label}</span>
-          <span className="mx-1 text-[#2A2A33]">·</span>
-          <span className="text-xs text-[#E8A34A]">Day {streak}</span>
+
+        {/* Tabs */}
+        <div style={S.tabs}>
+          {(["today","chat","progress"] as const).map(t => (
+            <button key={t} onClick={() => setTab(t)} style={S.tab(tab === t)}>
+              {t.charAt(0).toUpperCase() + t.slice(1)}
+              {tab === t && <div style={S.tabLine} />}
+            </button>
+          ))}
         </div>
-      </div>
 
-      {/* Tabs */}
-      <div className="px-5 flex gap-1 border-b border-[#1E1E24] mb-0">
-        {(["today", "chat", "streak"] as const).map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`px-4 py-2.5 text-sm capitalize transition-colors relative ${
-              tab === t ? "text-[#F5F5FA]" : "text-[#6B6B7B] hover:text-[#9B9BAA]"
-            }`}
-          >
-            {t}
-            {tab === t && (
-              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#E8A34A] rounded-full" />
-            )}
-          </button>
-        ))}
-      </div>
+        {/* Content */}
+        <div style={S.content}>
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto">
-
-        {/* TODAY TAB */}
-        {tab === "today" && (
-          <div className="px-5 py-6 space-y-4">
-
-            {/* Task card */}
-            <div className="bg-[#141417] border border-[#2A2A33] rounded-2xl p-5">
-              <div className="flex items-center gap-2 mb-4">
-                <div className="w-2 h-2 rounded-full bg-[#E8A34A]" />
-                <span className="text-xs text-[#E8A34A] uppercase tracking-widest">Today&apos;s task</span>
+          {/* TODAY */}
+          {tab === "today" && (
+            <div style={S.pad}>
+              <div style={S.taskCard}>
+                <div style={S.taskHeader}>
+                  <div style={S.taskLabel}>Today&apos;s instruction</div>
+                  <div style={S.dayTag}>Day {streak}</div>
+                </div>
+                {taskLoading ? (
+                  <div>
+                    <div style={{ ...S.shimmer, width: "80%" }} />
+                    <div style={{ ...S.shimmer, width: "100%" }} />
+                    <div style={{ ...S.shimmer, width: "65%" }} />
+                  </div>
+                ) : (
+                  <div style={S.taskText}>{dayTask}</div>
+                )}
+                <div style={S.taskCoach}>
+                  <div style={S.taskAv}>A</div>
+                  <div style={S.taskCoachText}>Tell me tonight how it went. I&apos;ll adjust tomorrow based on what you find.</div>
+                </div>
               </div>
 
-              {taskLoading ? (
-                <div className="space-y-2">
-                  <div className="h-4 bg-[#2A2A33] rounded animate-pulse w-3/4" />
-                  <div className="h-4 bg-[#2A2A33] rounded animate-pulse w-full" />
-                  <div className="h-4 bg-[#2A2A33] rounded animate-pulse w-2/3" />
+              {!checkedIn ? (
+                <div style={S.checkCard}>
+                  <div style={S.checkLabel}>Evening check-in</div>
+                  <div style={S.checkQ}>Did you complete today&apos;s task?</div>
+                  <div style={S.checkBtns}>
+                    <button onClick={() => handleCheckIn(true)} style={S.btnYes}>✓ Yes, I did it</button>
+                    <button onClick={() => handleCheckIn(false)} style={S.btnNo}>Not today</button>
+                  </div>
                 </div>
               ) : (
-                <p className="text-[#F5F5FA] leading-relaxed text-sm">{dayTask}</p>
-              )}
-            </div>
-
-            {/* Evening check-in */}
-            {!checkedIn ? (
-              <div className="bg-[#141417] border border-[#2A2A33] rounded-2xl p-5">
-                <p className="text-xs text-[#6B6B7B] uppercase tracking-widest mb-3">Evening check-in</p>
-                <p className="text-sm text-[#9B9BAA] mb-4">Did you complete today&apos;s task?</p>
-                <div className="flex gap-3">
-                  <button
-                    onClick={() => handleCheckIn(true)}
-                    className="flex-1 bg-[rgba(232,163,74,0.12)] border border-[#E8A34A]/30 text-[#E8A34A] py-3 rounded-xl text-sm font-medium hover:bg-[rgba(232,163,74,0.2)] transition-colors"
-                  >
-                    ✓ Yes, I did it
-                  </button>
-                  <button
-                    onClick={() => handleCheckIn(false)}
-                    className="flex-1 bg-[#1E1E24] border border-[#2A2A33] text-[#9B9BAA] py-3 rounded-xl text-sm hover:border-[#6B6B7B] transition-colors"
-                  >
-                    Not today
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className={`rounded-2xl p-4 border ${
-                taskDone
-                  ? "bg-[rgba(232,163,74,0.08)] border-[#E8A34A]/30"
-                  : "bg-[#141417] border-[#2A2A33]"
-              }`}>
-                <p className="text-sm text-[#9B9BAA]">
-                  {taskDone
-                    ? "✓ Day complete. See you tomorrow."
-                    : "Tomorrow is a new day. Your coach will adjust."}
-                </p>
-              </div>
-            )}
-
-            {/* Tomorrow preview */}
-            <div className="bg-[#141417] border border-[#1E1E24] rounded-2xl p-5 opacity-60">
-              <p className="text-xs text-[#6B6B7B] uppercase tracking-widest mb-2">Tomorrow</p>
-              <p className="text-sm text-[#6B6B7B]">
-                {checkedIn
-                  ? "Your next task will be ready in the morning."
-                  : "Complete today's task to unlock tomorrow's coaching."}
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* CHAT TAB */}
-        {tab === "chat" && (
-          <div className="flex flex-col h-full">
-            <div className="flex-1 px-5 py-4 space-y-3 overflow-y-auto min-h-[400px]">
-              {messages.length === 0 && (
-                <div className="text-center pt-12">
-                  <div className="text-3xl mb-4">◈</div>
-                  <p className="text-sm text-[#6B6B7B] max-w-xs mx-auto">
-                    Ask your coach anything. How to do today&apos;s task, what you&apos;re struggling with, or just check in.
-                  </p>
-                </div>
-              )}
-              {messages.map((msg, i) => (
-                <div
-                  key={i}
-                  className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-                >
-                  {msg.role === "coach" && (
-                    <span className="text-[#E8A34A] text-sm mr-2 mt-1 shrink-0">◈</span>
-                  )}
-                  <div
-                    className={`max-w-[80%] px-4 py-3 rounded-2xl text-sm leading-relaxed ${
-                      msg.role === "user"
-                        ? "bg-[#E8A34A] text-[#0D0D0F] font-medium rounded-br-sm"
-                        : "bg-[#141417] border border-[#2A2A33] text-[#F5F5FA] rounded-bl-sm"
-                    }`}
-                  >
-                    {msg.text}
-                  </div>
-                </div>
-              ))}
-              {loading && (
-                <div className="flex justify-start">
-                  <span className="text-[#E8A34A] text-sm mr-2 mt-1">◈</span>
-                  <div className="bg-[#141417] border border-[#2A2A33] px-4 py-3 rounded-2xl rounded-bl-sm flex gap-1.5">
-                    {[0, 1, 2].map((i) => (
-                      <div
-                        key={i}
-                        className="w-1.5 h-1.5 rounded-full bg-[#6B6B7B]"
-                        style={{ animation: `pulse 1s ${i * 0.15}s infinite` }}
-                      />
-                    ))}
+                <div style={{ ...S.checkCard, background: done ? "#EEF6F1" : "#F8F6F2", borderColor: done ? "rgba(30,92,64,0.15)" : "#E8E2DA" }}>
+                  <div style={S.taskCoach}>
+                    <div style={S.taskAv}>A</div>
+                    <div style={{ fontSize: 14, color: "#1A1714" }}>{done ? "Day 1 complete. See you tomorrow." : "Tomorrow we adjust. Talk to your coach below."}</div>
                   </div>
                 </div>
               )}
-              <div ref={messagesEndRef} />
-            </div>
 
-            {/* Input */}
-            <div className="px-5 py-4 border-t border-[#1E1E24]">
-              <div className="flex gap-3">
-                <input
-                  type="text"
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-                  placeholder="Talk to your coach..."
-                  className="flex-1 bg-[#141417] border border-[#2A2A33] rounded-xl px-4 py-3 text-sm text-[#F5F5FA] placeholder-[#6B6B7B] focus:outline-none focus:border-[#E8A34A] transition-colors"
-                />
-                <button
-                  onClick={sendMessage}
-                  disabled={!input.trim() || loading}
-                  className="bg-[#E8A34A] text-[#0D0D0F] px-4 py-3 rounded-xl font-medium text-sm hover:bg-[#C4862C] transition-colors disabled:opacity-30"
-                >
-                  →
-                </button>
+              <div style={S.tmrCard}>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase" as const, color: "#A09890", marginBottom: 6 }}>Tomorrow</div>
+                <div style={{ fontSize: 13, color: "#A09890" }}>Check in tonight to unlock tomorrow&apos;s coaching.</div>
               </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* STREAK TAB */}
-        {tab === "streak" && (
-          <div className="px-5 py-6">
-            <div className="text-center mb-8">
-              <div className="text-6xl font-display text-[#E8A34A] mb-2">{streak}</div>
-              <p className="text-[#6B6B7B] text-sm">day streak</p>
-            </div>
-
-            <div className="grid grid-cols-7 gap-2 mb-8">
-              {Array.from({ length: 28 }).map((_, i) => (
-                <div
-                  key={i}
-                  className={`aspect-square rounded-lg ${
-                    i < streak
-                      ? "bg-[#E8A34A]"
-                      : i === streak
-                      ? "bg-[rgba(232,163,74,0.2)] border border-[#E8A34A]/30"
-                      : "bg-[#1E1E24]"
-                  }`}
-                />
-              ))}
-            </div>
-
-            <div className="space-y-3">
-              <div className="bg-[#141417] border border-[#2A2A33] rounded-2xl p-4">
-                <p className="text-xs text-[#6B6B7B] mb-1">Current category</p>
-                <p className="text-sm text-[#F5F5FA]">{cat.emoji} {cat.label}</p>
+          {/* CHAT */}
+          {tab === "chat" && (
+            <div style={S.chatWrap}>
+              <div style={S.chatMsgs}>
+                {msgs.length === 0 ? (
+                  <div style={S.chatEmpty}>
+                    <div style={S.chatEmptyMark}>A</div>
+                    <div style={{ fontFamily: "Georgia,serif", fontSize: 18, color: "#1A1714", fontWeight: 700, marginBottom: 8 }}>Your coach is here.</div>
+                    <div style={{ fontSize: 13, color: "#6B6560", lineHeight: 1.6, maxWidth: 220 }}>Ask anything about today&apos;s task or what you&apos;re going through.</div>
+                  </div>
+                ) : msgs.map((m, i) => (
+                  <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-end", flexDirection: m.role === "user" ? "row-reverse" : "row" }}>
+                    {m.role === "coach" && <div style={{ width: 28, height: 28, borderRadius: 8, background: "#1E5C40", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Georgia,serif", fontSize: 12, color: "#fff", fontWeight: 900, flexShrink: 0 }}>A</div>}
+                    <div style={{ maxWidth: "78%", padding: "12px 16px", borderRadius: 18, fontSize: 14, lineHeight: 1.65, ...(m.role === "coach" ? { background: "#EEF6F1", border: "1px solid #E8E2DA", color: "#1A1714", borderBottomLeftRadius: 4 } : { background: "#1E5C40", color: "#fff", borderBottomRightRadius: 4, fontWeight: 500 }) }}>
+                      {m.text}
+                    </div>
+                  </div>
+                ))}
+                {chatLoading && (
+                  <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+                    <div style={{ width: 28, height: 28, borderRadius: 8, background: "#1E5C40", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Georgia,serif", fontSize: 12, color: "#fff", fontWeight: 900 }}>A</div>
+                    <div style={{ background: "#EEF6F1", border: "1px solid #E8E2DA", borderRadius: 18, borderBottomLeftRadius: 4, padding: "14px 17px", display: "flex", gap: 5 }}>
+                      {[0,1,2].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: "#A09890", animation: `bounce 1.2s ${i*0.15}s infinite` }} />)}
+                    </div>
+                  </div>
+                )}
+                <div ref={endRef} />
               </div>
-              <div className="bg-[#141417] border border-[#2A2A33] rounded-2xl p-4">
-                <p className="text-xs text-[#6B6B7B] mb-1">Coaching style</p>
-                <p className="text-sm text-[#F5F5FA] capitalize">{onboarding.level || "Building momentum"}</p>
-              </div>
-              <div className="bg-[#141417] border border-[#2A2A33] rounded-2xl p-4">
-                <p className="text-xs text-[#6B6B7B] mb-1">Check-in schedule</p>
-                <p className="text-sm text-[#F5F5FA] capitalize">{onboarding.time || "Morning + Evening"}</p>
+              <div style={S.chatInputBar}>
+                <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && sendMsg()} placeholder="Talk to your coach..." style={S.chatInput} />
+                <button onClick={sendMsg} disabled={chatLoading || !input.trim()} style={{ ...S.chatSend, opacity: chatLoading || !input.trim() ? 0.4 : 1 }}>→</button>
               </div>
             </div>
-          </div>
-        )}
+          )}
+
+          {/* PROGRESS */}
+          {tab === "progress" && (
+            <div style={S.progWrap}>
+              <div style={S.streakHero}>
+                <div style={S.streakNum}>{streak}</div>
+                <div style={S.streakSub}>day streak</div>
+                <div style={S.streakQ}>&ldquo;Every coach you&apos;ll ever have started with Day 1.&rdquo;</div>
+              </div>
+              <div style={S.grid}>
+                {Array.from({ length: 28 }).map((_, i) => (
+                  <div key={i} style={{ aspectRatio: "1", borderRadius: 6, background: i < streak ? "#1E5C40" : i === streak ? "rgba(30,92,64,0.20)" : "#E8E2DA", border: i === streak ? "1.5px solid #1E5C40" : "none" }} />
+                ))}
+              </div>
+              <div style={S.statCards}>
+                <div style={S.statCard}>
+                  <div style={S.statLabel}>Category</div>
+                  <div style={{ ...S.statVal, color: "#1E5C40" }}>{catLabel}</div>
+                </div>
+                <div style={S.statCard}>
+                  <div style={S.statLabel}>Check-ins</div>
+                  <div style={S.statVal}>Morning + Evening</div>
+                </div>
+                <div style={S.statCard}>
+                  <div style={S.statLabel}>Tasks done</div>
+                  <div style={S.statVal}>{done ? "1" : "0"} / 1 this week</div>
+                </div>
+                <div style={S.statCard}>
+                  <div style={S.statLabel}>Plan built</div>
+                  <div style={{ ...S.statVal, color: "#1E5C40" }}>✓ Active</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+        </div>
+
+        {/* Bottom nav */}
+        <div style={S.bnav}>
+          {[{ id: "today", icon: "☀️", label: "Today" }, { id: "chat", icon: "A", label: "Coach", isText: true }, { id: "progress", icon: "▦", label: "Progress" }].map(item => (
+            <button key={item.id} onClick={() => setTab(item.id as typeof tab)} style={S.bnavItem(tab === item.id)}>
+              {item.isText ? <div style={{ width: 22, height: 22, borderRadius: 6, background: tab === item.id ? "#1E5C40" : "#E8E2DA", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Georgia,serif", fontSize: 11, color: tab === item.id ? "#fff" : "#A09890", fontWeight: 900 }}>A</div> : <span style={{ fontSize: 20 }}>{item.icon}</span>}
+              <span style={{ fontSize: 10, fontWeight: 500, letterSpacing: "0.04em", textTransform: "uppercase" }}>{item.label}</span>
+            </button>
+          ))}
+        </div>
+
+        <style>{`
+          @keyframes bounce { 0%,80%,100%{transform:scale(0.6);opacity:0.3} 40%{transform:scale(1);opacity:1} }
+          @keyframes shimmer { 0%,100%{opacity:0.5} 50%{opacity:1} }
+        `}</style>
       </div>
-
-      {/* Bottom nav */}
-      <div className="border-t border-[#1E1E24] px-5 py-3 flex justify-around">
-        {[
-          { id: "today", icon: "☀️", label: "Today" },
-          { id: "chat", icon: "◈", label: "Coach" },
-          { id: "streak", icon: "📈", label: "Progress" },
-        ].map((item) => (
-          <button
-            key={item.id}
-            onClick={() => setTab(item.id as typeof tab)}
-            className={`flex flex-col items-center gap-1 px-4 ${
-              tab === item.id ? "text-[#E8A34A]" : "text-[#6B6B7B]"
-            }`}
-          >
-            <span className="text-lg">{item.icon}</span>
-            <span className="text-xs">{item.label}</span>
-          </button>
-        ))}
-      </div>
-
-      <style jsx>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 0.3; transform: scale(0.8); }
-          50% { opacity: 1; transform: scale(1); }
-        }
-      `}</style>
     </div>
   );
 }

@@ -18,24 +18,14 @@ export default function Onboarding() {
   const [exchangeCount, setExchangeCount] = useState(0);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recRef = useRef<any>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const synthRef = useRef<any>(null);
   const msgsEndRef = useRef<HTMLDivElement>(null);
   const historyRef = useRef<{role: string; content: string}[]>([]);
-
-  useEffect(() => {
-    synthRef.current = window.speechSynthesis;
-    if (synthRef.current) {
-      synthRef.current.onvoiceschanged = () => synthRef.current?.getVoices();
-      synthRef.current.getVoices();
-    }
-  }, []);
 
   useEffect(() => {
     msgsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [msgs]);
 
-  const openingMsg = "Before I build your plan, I want to actually understand your life — not have you fill out a form. Tell me honestly: what is going on right now? What feels heavy, off, or missing?";
+  const openingMsg = "Hey — glad you're here. Before I put anything together for you, I just want to actually hear what's going on. Not a form, not checkboxes. Just tell me — what's been weighing on you lately?";
 
   function startMode(m: "voice" | "text") {
     setMode(m);
@@ -78,24 +68,38 @@ export default function Onboarding() {
     }
   }
 
-  function atlasSpeak(text: string, currentMode?: string) {
+  async function atlasSpeak(text: string, currentMode?: string) {
     const m = currentMode || mode;
     addMsg("atlas", text);
     historyRef.current.push({ role: "assistant", content: text });
 
-    if (m === "voice" && synthRef.current) {
-      synthRef.current.cancel();
-      const utt = new SpeechSynthesisUtterance(text);
-      utt.rate = 0.91; utt.pitch = 1.0;
-      const voices = synthRef.current.getVoices();
-      const preferred = voices.find((v: SpeechSynthesisVoice) =>
-        v.name.includes("Samantha") || v.name.includes("Karen") || v.name.includes("Daniel")
-      ) || voices.find((v: SpeechSynthesisVoice) => v.lang === "en-US") || voices[0];
-      if (preferred) utt.voice = preferred;
+    if (m === "voice") {
       setAtlasSpeaking(true);
       setStatus("Atlas is speaking...");
-      utt.onend = () => { setAtlasSpeaking(false); setStatus("Tap the mic and speak freely"); };
-      synthRef.current.speak(utt);
+      try {
+        const res = await fetch("/api/speak", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        if (!res.ok) throw new Error("speak failed");
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        audio.onended = () => {
+          URL.revokeObjectURL(url);
+          setAtlasSpeaking(false);
+          setStatus("Tap the mic and speak freely");
+        };
+        audio.onerror = () => {
+          setAtlasSpeaking(false);
+          setStatus("Tap the mic and speak freely");
+        };
+        await audio.play();
+      } catch {
+        setAtlasSpeaking(false);
+        setStatus("Tap the mic and speak freely");
+      }
     }
   }
 

@@ -88,9 +88,9 @@ export default function Onboarding() {
       const utt = new SpeechSynthesisUtterance(text);
       utt.rate = 0.91; utt.pitch = 1.0;
       const voices = synthRef.current.getVoices();
-      const preferred = voices.find(v =>
+      const preferred = voices.find((v: SpeechSynthesisVoice) =>
         v.name.includes("Samantha") || v.name.includes("Karen") || v.name.includes("Daniel")
-      ) || voices.find(v => v.lang === "en-US") || voices[0];
+      ) || voices.find((v: SpeechSynthesisVoice) => v.lang === "en-US") || voices[0];
       if (preferred) utt.voice = preferred;
       setAtlasSpeaking(true);
       setStatus("Atlas is speaking...");

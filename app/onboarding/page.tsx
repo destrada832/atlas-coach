@@ -125,39 +125,43 @@ export default function Onboarding() {
   }
 
 
-  async function atlasSpeak(text: string, currentMode?: string) {
+  async function atlasSpeak(text: string, currentMode?: string): Promise<void> {
     const m = currentMode || mode;
     addMsg("atlas", text);
     historyRef.current.push({ role: "assistant", content: text });
 
     if (m === "voice") {
       setAtlasSpeaking(true);
-      setStatus("Atlas is speaking...");
-      try {
-        const res = await fetch("/api/speak", {
+      setStatus("Atlas is speaking…");
+      return new Promise((resolve) => {
+        fetch("/api/speak", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text }),
-        });
-        if (!res.ok) throw new Error("speak failed");
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        audio.onended = () => {
-          URL.revokeObjectURL(url);
-          setAtlasSpeaking(false);
-          // Auto-listen after Atlas finishes — hands-free conversation
-          setTimeout(() => startListening(), 400);
-        };
-        audio.onerror = () => {
-          setAtlasSpeaking(false);
-          setStatus("Tap the mic and speak freely");
-        };
-        await audio.play();
-      } catch {
-        setAtlasSpeaking(false);
-        setStatus("Tap the mic and speak freely");
-      }
+        })
+          .then(r => { if (!r.ok) throw new Error("speak failed"); return r.blob(); })
+          .then(blob => {
+            const url = URL.createObjectURL(blob);
+            const audio = new Audio(url);
+            audio.onended = () => {
+              URL.revokeObjectURL(url);
+              setAtlasSpeaking(false);
+              setTimeout(() => startListening(), 400);
+              resolve();
+            };
+            audio.onerror = () => {
+              setAtlasSpeaking(false);
+              setStatus("Tap the mic and speak freely");
+              resolve();
+            };
+            audio.play().catch(() => { setAtlasSpeaking(false); resolve(); });
+          })
+          .catch(() => {
+            setAtlasSpeaking(false);
+            setStatus("Tap the mic and speak freely");
+            resolve();
+          });
+      });
     }
   }
 
@@ -186,21 +190,24 @@ export default function Onboarding() {
           history: historyRef.current.slice(0, -1),
         }),
       });
+
+      if (!res.ok) throw new Error("API error");
       const { reply } = await res.json();
+
+      setLoading(false);
 
       if (reply.startsWith("PLAN_READY:") || newCount >= 6) {
         const cleanReply = reply.replace("PLAN_READY:", "").trim();
-        if (cleanReply) atlasSpeak(cleanReply || "I have everything I need. Building your plan now...");
-        else atlasSpeak("I have heard enough. Let me build your personalized plan now.");
-        setTimeout(() => generatePlan(), 2500);
+        await atlasSpeak(cleanReply || "I have everything I need. Building your plan now...");
+        setTimeout(() => generatePlan(), 1000);
       } else {
-        atlasSpeak(reply);
+        await atlasSpeak(reply);
       }
-    } catch {
-      atlasSpeak("Tell me more about that.");
+    } catch (err) {
+      console.error("handleUser error:", err);
+      setLoading(false);
+      setStatus("Something went wrong — tap to try again");
     }
-    setLoading(false);
-    setStatus("Tap the mic and speak freely");
   }
 
   async function generatePlan() {

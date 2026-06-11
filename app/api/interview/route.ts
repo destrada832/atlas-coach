@@ -1,56 +1,56 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(req: NextRequest) {
-  try {
-    const { message, history } = await req.json();
+  const { message, history } = await req.json();
 
-    const systemInstruction = `You are Atlas. You talk like a real person — a trusted friend who happens to be a great life coach.
+  const systemInstruction = `You are Atlas — a warm, direct life coach having a real conversation.
 
-Your voice: casual, warm, real. Like you're sitting across from them at a coffee shop.
+Rules:
+- 2-3 short sentences max. Talk like a real person, not a bot.
+- ALWAYS mention something specific from what they just said.
+- NEVER say "tell me more about that" — that's lazy. Pick something specific and ask about THAT.
+- One question only. Never two.
+- If they share something painful, acknowledge it first.
+- No jargon. No "I hear you." No "That's valid." Just be real.
 
-Right now you're getting to know them. NOT giving advice yet.
+Example: they say "I'm exhausted, the baby won't sleep and work is brutal" → you say "The baby plus a rough job — that's a lot to carry at once. How long has the no-sleep thing been going on?"
 
-How to talk:
-- Short sentences. Max 2-3 sentences per response.
-- Use contractions. "what's going on" not "what is going on"
-- ALWAYS reference something specific they just said. Never give a generic response.
-- NEVER say "tell me more about that" — it's lazy. Instead, pick ONE specific thing they said and ask about that specifically.
-- Ask ONE question. Not two. Not three. One.
-- If they say something heavy, acknowledge it first before asking anything.
-- Sound curious, not clinical. Like you genuinely care.
-- No corporate coach speak. No "I hear you." No "That's really valid." Just be real.
-- No bullet points. No lists. Just natural conversation.
+After 5-6 exchanges, start your response with exactly "PLAN_READY:" then summarize what you'll build.`;
 
-Good example: if they say "I'm exhausted from work and my baby doesn't sleep" — don't say "tell me more." Say something like "The baby not sleeping on top of a draining job — that's a brutal combo. How long has that been going on?"
-
-After 5-6 good exchanges where you understand their situation, start your response with "PLAN_READY:" and tell them briefly what you're going to build for them.`;
-
-    // Convert history to Gemini format (role: user | model)
-    const contents = history.map((m: {role: string; content: string}) => ({
+  const contents = [
+    ...history.map((m: {role: string; content: string}) => ({
       role: m.role === "assistant" ? "model" : "user",
       parts: [{ text: m.content }],
-    }));
-    contents.push({ role: "user", parts: [{ text: message }] });
+    })),
+    { role: "user", parts: [{ text: message }] }
+  ];
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemInstruction }] },
-          contents,
-          generationConfig: { maxOutputTokens: 200, temperature: 0.8 },
-        }),
-      }
-    );
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${process.env.GEMINI_API_KEY}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemInstruction }] },
+        contents,
+        generationConfig: { maxOutputTokens: 150, temperature: 0.9 },
+      }),
+    }
+  );
 
-    const data = await response.json();
-    const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || "Tell me more about that.";
-
-    return NextResponse.json({ reply });
-  } catch (error) {
-    console.error(error);
-    return NextResponse.json({ reply: "Tell me more about that." }, { status: 500 });
+  if (!res.ok) {
+    const err = await res.text();
+    console.error("Gemini error:", res.status, err);
+    return NextResponse.json({ reply: "Something went wrong on my end. Can you say that again?" }, { status: 500 });
   }
+
+  const data = await res.json();
+  const reply = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+
+  if (!reply) {
+    console.error("No reply from Gemini:", JSON.stringify(data));
+    return NextResponse.json({ reply: "I missed that — can you say it again?" });
+  }
+
+  return NextResponse.json({ reply });
 }

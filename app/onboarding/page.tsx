@@ -40,18 +40,31 @@ export default function Onboarding() {
     const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
     if (!SR) return;
     const r = new SR();
-    r.continuous = false;
+    r.continuous = true;
     r.interimResults = true;
     r.lang = "en-US";
-    r.onstart = () => { setListening(true); setTranscript(""); setStatus("Listening..."); };
+    let accumulated = "";
+    let silenceTimer: ReturnType<typeof setTimeout> | null = null;
+    r.onstart = () => { setListening(true); accumulated = ""; setTranscript(""); setStatus("Listening... speak freely"); };
     r.onresult = (e: any) => {
       let interim = "", final = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) final += e.results[i][0].transcript;
+        if (e.results[i].isFinal) final += e.results[i][0].transcript + " ";
         else interim += e.results[i][0].transcript;
       }
-      setTranscript(final || interim);
-      if (final) setTimeout(() => handleUser(final), 300);
+      if (final) accumulated += final;
+      setTranscript((accumulated + interim).trim());
+      // Reset 1.5s silence timer on every new word — only send after real pause
+      if (silenceTimer) clearTimeout(silenceTimer);
+      if (accumulated.trim()) {
+        silenceTimer = setTimeout(() => {
+          const text = accumulated.trim();
+          accumulated = "";
+          silenceTimer = null;
+          r.stop();
+          handleUser(text);
+        }, 1500);
+      }
     };
     r.onend = () => { setListening(false); setStatus("Tap the mic and speak freely"); };
     r.onerror = () => { setListening(false); setStatus("Tap to try again"); };

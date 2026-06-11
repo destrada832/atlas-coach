@@ -43,41 +43,83 @@ export default function Onboarding() {
     r.continuous = true;
     r.interimResults = true;
     r.lang = "en-US";
-    let accumulated = "";
-    let silenceTimer: ReturnType<typeof setTimeout> | null = null;
-    r.onstart = () => { setListening(true); accumulated = ""; setTranscript(""); setStatus("Listening... speak freely"); };
-    r.onresult = (e: any) => {
-      let interim = "", final = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) final += e.results[i][0].transcript + " ";
-        else interim += e.results[i][0].transcript;
-      }
-      if (final) accumulated += final;
-      setTranscript((accumulated + interim).trim());
-      // Reset 1.5s silence timer on every new word — only send after real pause
-      if (silenceTimer) clearTimeout(silenceTimer);
-      if (accumulated.trim()) {
-        silenceTimer = setTimeout(() => {
-          const text = accumulated.trim();
-          accumulated = "";
-          silenceTimer = null;
-          r.stop();
-          handleUser(text);
-        }, 1500);
-      }
-    };
-    r.onend = () => { setListening(false); setStatus("Tap the mic and speak freely"); };
-    r.onerror = () => { setListening(false); setStatus("Tap to try again"); };
     recRef.current = r;
+  }
+
+  function startListening() {
+    const w = window as any;
+    const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
+    if (!SR || atlasSpeaking) return;
+
+    // Shared accumulator lives outside recognition instances
+    if (!(window as any)._atlasAccum) (window as any)._atlasAccum = "";
+    (window as any)._atlasAccum = "";
+    (window as any)._atlasSending = false;
+    setTranscript("");
+    setListening(true);
+    setStatus("Listening… speak as long as you want");
+
+    function launchSession() {
+      if ((window as any)._atlasSending) return;
+      const r = new SR();
+      r.continuous = true;
+      r.interimResults = true;
+      r.lang = "en-US";
+      recRef.current = r;
+
+      r.onresult = (e: any) => {
+        let interim = "", final = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          if (e.results[i].isFinal) final += e.results[i][0].transcript + " ";
+          else interim += e.results[i][0].transcript;
+        }
+        if (final) (window as any)._atlasAccum += final;
+        setTranscript(((window as any)._atlasAccum + interim).trim());
+      };
+
+      // When browser stops recognition, auto-restart unless user hit Done
+      r.onend = () => {
+        if (!(window as any)._atlasSending && (window as any)._atlasListening) {
+          try { launchSession(); } catch (e) { console.log(e); }
+        } else {
+          setListening(false);
+        }
+      };
+
+      r.onerror = (e: any) => {
+        if (e.error !== "aborted" && !(window as any)._atlasSending) {
+          try { setTimeout(launchSession, 300); } catch { setListening(false); }
+        }
+      };
+
+      try { r.start(); } catch (e) { console.log(e); }
+    }
+
+    (window as any)._atlasListening = true;
+    launchSession();
+  }
+
+  function stopAndSend() {
+    (window as any)._atlasListening = false;
+    (window as any)._atlasSending = true;
+    try { (recRef.current as any)?.stop(); } catch (e) { console.log(e); }
+    setListening(false);
+    const text = ((window as any)._atlasAccum || "").trim();
+    (window as any)._atlasAccum = "";
+    if (text) {
+      setTranscript(text);
+      setTimeout(() => handleUser(text), 100);
+    } else {
+      setStatus("Tap the mic and speak freely");
+    }
   }
 
   function toggleMic() {
     if (atlasSpeaking) return;
     if (listening) {
-      (recRef.current as {stop:()=>void})?.stop();
+      stopAndSend();
     } else {
-      if (!recRef.current) initRecognition();
-      try { (recRef.current as {start:()=>void})?.start(); } catch (e) { console.log(e); }
+      startListening();
     }
   }
 
@@ -326,9 +368,15 @@ export default function Onboarding() {
             <div style={{ fontSize: 13, color: "#7A7680", textAlign: "center" }}>{status}</div>
             <div style={{ fontSize: 14, color: "#F0EDE8", fontFamily: "Georgia,serif", fontStyle: "italic", minHeight: 20, textAlign: "center", maxWidth: 280, lineHeight: 1.5, opacity: 0.8 }}>{transcript}</div>
             <button onClick={toggleMic} style={{ width: 64, height: 64, borderRadius: "50%", background: listening ? "#C0392B" : atlasSpeaking ? "#2C2A30" : "#1E5C40", border: atlasSpeaking ? "2px solid #1E5C40" : "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: atlasSpeaking ? "not-allowed" : "pointer", fontSize: 24, transition: "all 0.2s", boxShadow: listening ? "0 0 0 0 rgba(192,57,43,0.5)" : "0 4px 18px rgba(30,92,64,0.30)", animation: listening ? "micRing 1s infinite" : "none" }}>
-              {atlasSpeaking ? "🔊" : listening ? "⏹" : "🎙"}
+              {atlasSpeaking ? "🔊" : listening ? "🎙" : "🎙"}
             </button>
-            <div style={{ fontSize: 11, color: "rgba(122,118,128,0.55)", letterSpacing: "0.04em" }}>Tap to start · tap again to stop</div>
+            {listening ? (
+              <button onClick={stopAndSend} style={{ background: "#1E5C40", color: "#fff", border: "none", borderRadius: 24, padding: "12px 28px", fontSize: 16, fontWeight: 700, cursor: "pointer", letterSpacing: "-0.2px" }}>
+                Done talking →
+              </button>
+            ) : (
+              <div style={{ fontSize: 11, color: "rgba(122,118,128,0.55)", letterSpacing: "0.04em" }}>Tap mic · speak · tap Done when finished</div>
+            )}
           </div>
         )}
 

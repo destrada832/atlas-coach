@@ -35,7 +35,7 @@ export default function Onboarding() {
     }, 600);
   }
 
-  function initRecognition() { /* no-op, kept for compatibility */ }
+  function initRecognition() { /* no-op */ }
 
   async function startListening() {
     if (atlasSpeaking) return;
@@ -43,7 +43,6 @@ export default function Onboarding() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const chunks: BlobPart[] = [];
 
-      // Pick best supported format
       const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
         ? "audio/webm;codecs=opus"
         : MediaRecorder.isTypeSupported("audio/webm")
@@ -52,66 +51,84 @@ export default function Onboarding() {
 
       const recorder = new MediaRecorder(stream, { mimeType });
       (window as any)._atlasRecorder = recorder;
-      (window as any)._atlasStream = stream;
 
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunks.push(e.data);
-      };
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
 
       recorder.onstop = async () => {
         stream.getTracks().forEach(t => t.stop());
         setListening(false);
         setStatus("Transcribing...");
         const blob = new Blob(chunks, { type: mimeType });
-        if (blob.size < 1000) {
-          setStatus("Tap the mic and speak freely");
-          return;
-        }
+        if (blob.size < 1000) { setStatus("Tap the mic and speak freely"); return; }
         try {
           const fd = new FormData();
           fd.append("audio", blob, "recording.webm");
           const res = await fetch("/api/transcribe", { method: "POST", body: fd });
           const data = await res.json();
           const text = (data.text || "").trim();
-          if (text) {
-            setTranscript(text);
-            handleUser(text);
-          } else {
-            setStatus("Couldn't hear that clearly — try again");
-          }
-        } catch {
-          setStatus("Transcription failed — try again");
-        }
+          if (text) { setTranscript(text); handleUser(text); }
+          else setStatus("Couldn't hear that — try again");
+        } catch { setStatus("Transcription failed — try again"); }
       };
 
-      recorder.start(250); // collect chunks every 250ms
+      recorder.start(250);
       setListening(true);
-      setStatus("Recording… speak as long as you want");
+      setStatus("Listening… speak freely");
       setTranscript("");
 
-      // Show live timer
-      let secs = 0;
-      const timer = setInterval(() => {
-        secs++;
-        if ((window as any)._atlasRecorder?.state === "recording") {
-          setStatus(`Recording ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")} — tap Done when finished`);
-        } else {
-          clearInterval(timer);
-        }
-      }, 1000);
-      (window as any)._atlasTimer = timer;
+      // Web Audio API — detect silence, auto-send after 2s
+      const audioCtx = new AudioContext();
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      audioCtx.createMediaStreamSource(stream).connect(analyser);
+      const data = new Uint8Array(analyser.frequencyBinCount);
 
-    } catch {
-      setStatus("Microphone access denied");
-    }
+      let silenceStart = 0;
+      let secs = 0;
+      let hasSpeech = false;
+      const SILENCE_MS = 2000;
+      const THRESHOLD = 12; // volume 0-255
+
+      (window as any)._atlasAudioCtx = audioCtx;
+
+      function tick() {
+        if ((window as any)._atlasRecorder?.state !== "recording") return;
+        analyser.getByteFrequencyData(data);
+        const vol = data.reduce((a: number, b: number) => a + b, 0) / data.length;
+        const now = Date.now();
+
+        if (vol > THRESHOLD) {
+          // Speaking
+          hasSpeech = true;
+          silenceStart = 0;
+          secs = Math.round((now - (window as any)._atlasStart) / 1000);
+          const m = Math.floor(secs / 60), s = String(secs % 60).padStart(2, "0");
+          setStatus(`Recording ${m}:${s} — pause to send`);
+        } else if (hasSpeech) {
+          // Silence after speaking
+          if (!silenceStart) silenceStart = now;
+          const silent = now - silenceStart;
+          const countdown = Math.ceil((SILENCE_MS - silent) / 1000);
+          if (silent >= SILENCE_MS) {
+            audioCtx.close();
+            stopAndSend();
+            return;
+          }
+          setStatus(countdown <= 1 ? "Sending…" : `Sending in ${countdown}s`);
+        }
+        requestAnimationFrame(tick);
+      }
+
+      (window as any)._atlasStart = Date.now();
+      requestAnimationFrame(tick);
+
+    } catch { setStatus("Microphone access denied"); }
   }
 
   function stopAndSend() {
-    clearInterval((window as any)._atlasTimer);
+    try { (window as any)._atlasAudioCtx?.close(); } catch { /* ok */ }
     const recorder = (window as any)._atlasRecorder as MediaRecorder;
-    if (recorder && recorder.state === "recording") {
-      recorder.stop();
-    }
+    if (recorder && recorder.state === "recording") recorder.stop();
   }
 
   function toggleMic() {
@@ -371,8 +388,8 @@ export default function Onboarding() {
               {atlasSpeaking ? "🔊" : listening ? "🎙" : "🎙"}
             </button>
             {listening ? (
-              <button onClick={stopAndSend} style={{ background: "#1E5C40", color: "#fff", border: "none", borderRadius: 24, padding: "12px 28px", fontSize: 16, fontWeight: 700, cursor: "pointer", letterSpacing: "-0.2px" }}>
-                Done talking →
+              <button onClick={stopAndSend} style={{ background: "transparent", color: "#9A8C7A", border: "1px solid rgba(154,140,122,0.3)", borderRadius: 24, padding: "8px 20px", fontSize: 13, cursor: "pointer" }}>
+                Send now
               </button>
             ) : (
               <div style={{ fontSize: 11, color: "rgba(122,118,128,0.55)", letterSpacing: "0.04em" }}>Tap mic · speak · tap Done when finished</div>

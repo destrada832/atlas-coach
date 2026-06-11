@@ -35,82 +35,82 @@ export default function Onboarding() {
     }, 600);
   }
 
-  function initRecognition() {
-    const w = window as any;
-    const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
-    if (!SR) return;
-    const r = new SR();
-    r.continuous = true;
-    r.interimResults = true;
-    r.lang = "en-US";
-    recRef.current = r;
-  }
+  function initRecognition() { /* no-op, kept for compatibility */ }
 
-  function startListening() {
-    const w = window as any;
-    const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
-    if (!SR || atlasSpeaking) return;
+  async function startListening() {
+    if (atlasSpeaking) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const chunks: BlobPart[] = [];
 
-    // Shared accumulator lives outside recognition instances
-    if (!(window as any)._atlasAccum) (window as any)._atlasAccum = "";
-    (window as any)._atlasAccum = "";
-    (window as any)._atlasSending = false;
-    setTranscript("");
-    setListening(true);
-    setStatus("Listening… speak as long as you want");
+      // Pick best supported format
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/webm")
+        ? "audio/webm"
+        : "audio/mp4";
 
-    function launchSession() {
-      if ((window as any)._atlasSending) return;
-      const r = new SR();
-      r.continuous = true;
-      r.interimResults = true;
-      r.lang = "en-US";
-      recRef.current = r;
+      const recorder = new MediaRecorder(stream, { mimeType });
+      (window as any)._atlasRecorder = recorder;
+      (window as any)._atlasStream = stream;
 
-      r.onresult = (e: any) => {
-        let interim = "", final = "";
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-          if (e.results[i].isFinal) final += e.results[i][0].transcript + " ";
-          else interim += e.results[i][0].transcript;
-        }
-        if (final) (window as any)._atlasAccum += final;
-        setTranscript(((window as any)._atlasAccum + interim).trim());
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
       };
 
-      // When browser stops recognition, auto-restart unless user hit Done
-      r.onend = () => {
-        if (!(window as any)._atlasSending && (window as any)._atlasListening) {
-          try { launchSession(); } catch (e) { console.log(e); }
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        setListening(false);
+        setStatus("Transcribing...");
+        const blob = new Blob(chunks, { type: mimeType });
+        if (blob.size < 1000) {
+          setStatus("Tap the mic and speak freely");
+          return;
+        }
+        try {
+          const fd = new FormData();
+          fd.append("audio", blob, "recording.webm");
+          const res = await fetch("/api/transcribe", { method: "POST", body: fd });
+          const data = await res.json();
+          const text = (data.text || "").trim();
+          if (text) {
+            setTranscript(text);
+            handleUser(text);
+          } else {
+            setStatus("Couldn't hear that clearly — try again");
+          }
+        } catch {
+          setStatus("Transcription failed — try again");
+        }
+      };
+
+      recorder.start(250); // collect chunks every 250ms
+      setListening(true);
+      setStatus("Recording… speak as long as you want");
+      setTranscript("");
+
+      // Show live timer
+      let secs = 0;
+      const timer = setInterval(() => {
+        secs++;
+        if ((window as any)._atlasRecorder?.state === "recording") {
+          setStatus(`Recording ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")} — tap Done when finished`);
         } else {
-          setListening(false);
+          clearInterval(timer);
         }
-      };
+      }, 1000);
+      (window as any)._atlasTimer = timer;
 
-      r.onerror = (e: any) => {
-        if (e.error !== "aborted" && !(window as any)._atlasSending) {
-          try { setTimeout(launchSession, 300); } catch { setListening(false); }
-        }
-      };
-
-      try { r.start(); } catch (e) { console.log(e); }
+    } catch {
+      setStatus("Microphone access denied");
     }
-
-    (window as any)._atlasListening = true;
-    launchSession();
   }
 
   function stopAndSend() {
-    (window as any)._atlasListening = false;
-    (window as any)._atlasSending = true;
-    try { (recRef.current as any)?.stop(); } catch (e) { console.log(e); }
-    setListening(false);
-    const text = ((window as any)._atlasAccum || "").trim();
-    (window as any)._atlasAccum = "";
-    if (text) {
-      setTranscript(text);
-      setTimeout(() => handleUser(text), 100);
-    } else {
-      setStatus("Tap the mic and speak freely");
+    clearInterval((window as any)._atlasTimer);
+    const recorder = (window as any)._atlasRecorder as MediaRecorder;
+    if (recorder && recorder.state === "recording") {
+      recorder.stop();
     }
   }
 

@@ -37,108 +37,93 @@ export default function Onboarding() {
 
   function initRecognition() { /* no-op */ }
 
-  async function startListening() {
+  function startListening() {
     if (atlasSpeaking) return;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const chunks: BlobPart[] = [];
+    const w = window as any;
+    const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
+    if (!SR) { setStatus("Speech recognition not supported"); return; }
 
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : MediaRecorder.isTypeSupported("audio/webm")
-        ? "audio/webm"
-        : "audio/mp4";
+    w._atlasRunning = true;
+    w._atlasAccum = "";
+    clearTimeout(w._atlasSilenceTimer);
+    setListening(true);
+    setTranscript("");
+    setStatus("Listening…");
 
-      const recorder = new MediaRecorder(stream, { mimeType });
-      (window as any)._atlasRecorder = recorder;
+    function launch() {
+      if (!w._atlasRunning) return;
+      const r = new SR();
+      r.continuous = true;
+      r.interimResults = true;
+      r.lang = "en-US";
+      w._atlasRec = r;
 
-      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-
-      recorder.onstop = async () => {
-        stream.getTracks().forEach(t => t.stop());
-        setListening(false);
-        setStatus("Transcribing...");
-        const blob = new Blob(chunks, { type: mimeType });
-        if (blob.size < 1000) { setStatus("Tap the mic and speak freely"); return; }
-        try {
-          const fd = new FormData();
-          fd.append("audio", blob, "recording.webm");
-          const res = await fetch("/api/transcribe", { method: "POST", body: fd });
-          const data = await res.json();
-          const text = (data.text || "").trim();
-          if (text) { setTranscript(text); handleUser(text); }
-          else setStatus("Couldn't hear that — try again");
-        } catch { setStatus("Transcription failed — try again"); }
+      r.onresult = (e: any) => {
+        let final = "", interim = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          if (e.results[i].isFinal) final += e.results[i][0].transcript + " ";
+          else interim += e.results[i][0].transcript;
+        }
+        if (final) w._atlasAccum += final;
+        setTranscript((w._atlasAccum + interim).trim());
+        // Every new word resets the 2.5s silence countdown
+        clearTimeout(w._atlasSilenceTimer);
+        if (w._atlasAccum.trim()) {
+          setStatus("Listening… pause to send");
+          w._atlasSilenceTimer = setTimeout(() => {
+            if (!w._atlasRunning) return;
+            const text = w._atlasAccum.trim();
+            if (text) {
+              w._atlasRunning = false;
+              try { r.stop(); } catch { /* ok */ }
+              setListening(false);
+              setStatus("Thinking…");
+              w._atlasAccum = "";
+              handleUser(text);
+            }
+          }, 2500);
+        }
       };
 
-      recorder.start(250);
-      setListening(true);
-      setStatus("Listening… speak freely");
-      setTranscript("");
+      // Browser cuts recognition internally — auto-restart, keep accumulating
+      r.onend = () => {
+        if (w._atlasRunning) setTimeout(launch, 50);
+        else setListening(false);
+      };
 
-      // Web Audio API — detect silence, auto-send after 2s
-      const audioCtx = new AudioContext();
-      const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 512;
-      audioCtx.createMediaStreamSource(stream).connect(analyser);
-      const data = new Uint8Array(analyser.frequencyBinCount);
-
-      let silenceStart = 0;
-      let secs = 0;
-      let hasSpeech = false;
-      const SILENCE_MS = 2000;
-      const THRESHOLD = 12; // volume 0-255
-
-      (window as any)._atlasAudioCtx = audioCtx;
-
-      function tick() {
-        if ((window as any)._atlasRecorder?.state !== "recording") return;
-        analyser.getByteFrequencyData(data);
-        const vol = data.reduce((a: number, b: number) => a + b, 0) / data.length;
-        const now = Date.now();
-
-        if (vol > THRESHOLD) {
-          // Speaking
-          hasSpeech = true;
-          silenceStart = 0;
-          secs = Math.round((now - (window as any)._atlasStart) / 1000);
-          const m = Math.floor(secs / 60), s = String(secs % 60).padStart(2, "0");
-          setStatus(`Recording ${m}:${s} — pause to send`);
-        } else if (hasSpeech) {
-          // Silence after speaking
-          if (!silenceStart) silenceStart = now;
-          const silent = now - silenceStart;
-          const countdown = Math.ceil((SILENCE_MS - silent) / 1000);
-          if (silent >= SILENCE_MS) {
-            audioCtx.close();
-            stopAndSend();
-            return;
-          }
-          setStatus(countdown <= 1 ? "Sending…" : `Sending in ${countdown}s`);
+      r.onerror = (e: any) => {
+        if (e.error === "not-allowed") {
+          w._atlasRunning = false;
+          setListening(false);
+          setStatus("Microphone access denied");
         }
-        requestAnimationFrame(tick);
-      }
+        // all other errors: onend will restart
+      };
 
-      (window as any)._atlasStart = Date.now();
-      requestAnimationFrame(tick);
+      try { r.start(); } catch { /* already running */ }
+    }
 
-    } catch { setStatus("Microphone access denied"); }
+    launch();
   }
 
   function stopAndSend() {
-    try { (window as any)._atlasAudioCtx?.close(); } catch { /* ok */ }
-    const recorder = (window as any)._atlasRecorder as MediaRecorder;
-    if (recorder && recorder.state === "recording") recorder.stop();
+    const w = window as any;
+    clearTimeout(w._atlasSilenceTimer);
+    w._atlasRunning = false;
+    try { w._atlasRec?.stop(); } catch { /* ok */ }
+    setListening(false);
+    const text = (w._atlasAccum || "").trim();
+    w._atlasAccum = "";
+    if (text) { setTranscript(text); handleUser(text); }
+    else setStatus("Tap the mic to start");
   }
 
   function toggleMic() {
     if (atlasSpeaking) return;
-    if (listening) {
-      stopAndSend();
-    } else {
-      startListening();
-    }
+    if (listening) stopAndSend();
+    else startListening();
   }
+
 
   async function atlasSpeak(text: string, currentMode?: string) {
     const m = currentMode || mode;

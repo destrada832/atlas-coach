@@ -161,7 +161,8 @@ export default function Onboarding() {
         audio.onended = () => {
           URL.revokeObjectURL(url);
           setAtlasSpeaking(false);
-          setStatus("Tap the mic and speak freely");
+          // Auto-listen after Atlas finishes — hands-free conversation
+          setTimeout(() => startListening(), 400);
         };
         audio.onerror = () => {
           setAtlasSpeaking(false);
@@ -392,7 +393,7 @@ export default function Onboarding() {
                 Send now
               </button>
             ) : (
-              <div style={{ fontSize: 11, color: "rgba(122,118,128,0.55)", letterSpacing: "0.04em" }}>Tap mic · speak · tap Done when finished</div>
+              <div style={{ fontSize: 11, color: "rgba(122,118,128,0.55)", letterSpacing: "0.04em" }}>Tap once to start — then just talk</div>
             )}
           </div>
         )}
